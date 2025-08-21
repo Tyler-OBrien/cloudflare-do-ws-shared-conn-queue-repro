@@ -51,7 +51,7 @@ export class MyDurableObject extends DurableObject<Env> {
 		// and the total number of connections with the "[Durable Object]: " prefix
 		//await new Promise(resolve => setTimeout(resolve, 5_000));
 		var perfBefore = performance.now();
-		await Promise.all([await fetch('https://new-worker-fetch-boop.as205398.net/')]); // slow website example, this is just a Worker which delays the response by 5 seconds
+		await Promise.all([await fetch('https://httpbin.org/delay/5')]); // slow website example, this just simulates a delay of 5s
 		var perfAfter = performance.now();
 		var perfDiff = perfAfter - perfBefore;
 		ws.send(`[Durable Object] message: ${message} (perf: ${perfDiff}ms)`);
