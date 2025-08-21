@@ -1,4 +1,4 @@
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject } from 'cloudflare:workers';
 
 /**
  * Welcome to Cloudflare Workers! This is your first Durable Objects application.
@@ -26,15 +26,40 @@ export class MyDurableObject extends DurableObject<Env> {
 		super(ctx, env);
 	}
 
-	/**
-	 * The Durable Object exposes an RPC method sayHello which will be invoked when when a Durable
-	 *  Object instance receives a request from a Worker via the same method invocation on the stub
-	 *
-	 * @param name - The name provided to a Durable Object instance from a Worker
-	 * @returns The greeting to be sent back to the Worker
-	 */
-	async sayHello(name: string): Promise<string> {
-		return `Hello, ${name}!`;
+	async fetch(request: Request): Promise<Response> {
+		var newUrl = new URL(request.url);
+		if (newUrl.pathname === '/no-op') {
+			// This is a no-op endpoint that does nothing, but can be used to test
+			// the Durable Object's fetch handler without WebSocket connections.
+			return new Response('No-op endpoint', { status: 200 });
+		}
+
+		// Creates two ends of a WebSocket connection.
+		const webSocketPair = new WebSocketPair();
+		const [client, server] = Object.values(webSocketPair);
+
+		this.ctx.acceptWebSocket(server);
+
+		return new Response(null, {
+			status: 101,
+			webSocket: client,
+		});
+	}
+
+	async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
+		// Upon receiving a message from the client, the server replies with the same message, the session ID of the connection,
+		// and the total number of connections with the "[Durable Object]: " prefix
+		//await new Promise(resolve => setTimeout(resolve, 5_000));
+		var perfBefore = performance.now();
+		await Promise.all([await fetch('https://new-worker-fetch-boop.as205398.net/')]); // slow website example, this is just a Worker which delays the response by 5 seconds
+		var perfAfter = performance.now();
+		var perfDiff = perfAfter - perfBefore;
+		ws.send(`[Durable Object] message: ${message} (perf: ${perfDiff}ms)`);
+	}
+
+	async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean) {
+		// If the client closes the connection, the runtime will invoke the webSocketClose() handler.
+		ws.close(code, 'Durable Object is closing WebSocket');
 	}
 }
 
@@ -48,19 +73,57 @@ export default {
 	 * @returns The response to be sent back to the client
 	 */
 	async fetch(request, env, ctx): Promise<Response> {
-		// Create a `DurableObjectId` for an instance of the `MyDurableObject`
-		// class named "foo". Requests from all Workers to the instance named
-		// "foo" will go to a single globally unique Durable Object instance.
-		const id: DurableObjectId = env.MY_DURABLE_OBJECT.idFromName("foo");
+		var newUrl = new URL(request.url);
+		if (newUrl.pathname === '/') {
+			return new Response(
+				`<!DOCTYPE html>
+<html>
+<head><title>WS Test</title></head>
+<body>
+<button onclick="send()" id="btn">Connect</button>
+<script>
+let ws;
+function send() {
+  if (!ws || ws.readyState > 1) {
+    ws = new WebSocket(\`ws://\${location.host}/websocket\`);
+    ws.onopen = () => btn.innerText = "Send";
+    ws.onmessage = e => console.log(e.data);
+    ws.onclose = () => btn.innerText = 'Connect';
+  } else if (ws.readyState === 1) {
+    ws.send(Math.random().toString(36));
+  }
+}
+</script>
+</body>
+</html>`,
+				{ headers: { 'Content-type': 'text/html' } }
+			);
+		} else if (newUrl.pathname === '/websocket') {
+			const upgradeHeader = request.headers.get('Upgrade');
+			if (!upgradeHeader || upgradeHeader !== 'websocket') {
+				return new Response('Worker expected Upgrade: websocket', {
+					status: 426,
+				});
+			}
 
-		// Create a stub to open a communication channel with the Durable
-		// Object instance.
-		const stub = env.MY_DURABLE_OBJECT.get(id);
+			if (request.method !== 'GET') {
+				return new Response('Worker expected GET method', {
+					status: 400,
+				});
+			}
 
-		// Call the `sayHello()` RPC method on the stub to invoke the method on
-		// the remote Durable Object instance
-		const greeting = await stub.sayHello("world");
+			// Since we are hard coding the Durable Object ID by providing the constant name 'foo',
+			// all requests to this Worker will be sent to the same Durable Object instance.
+			let id = env.MY_DURABLE_OBJECT.idFromName('foo');
+			let stub = env.MY_DURABLE_OBJECT.get(id);
 
-		return new Response(greeting);
+			return stub.fetch(request);
+		} else if (newUrl.pathname === '/no-op') {
+			let id = env.MY_DURABLE_OBJECT.idFromName('foo');
+			let stub = env.MY_DURABLE_OBJECT.get(id);
+
+			return stub.fetch(request);
+		}
+		return new Response('Not Found', { status: 404 });
 	},
 } satisfies ExportedHandler<Env>;
